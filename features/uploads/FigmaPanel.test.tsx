@@ -137,6 +137,12 @@ describe('FigmaPanel direct file upload', () => {
     expect(onFileChange).toHaveBeenLastCalledWith(json, null);
   });
 
+  it('tells users they can upload an actual native .fig file directly from their computer', () => {
+    renderPanel();
+    expect(screen.getByText(/directly from your computer/i)).toBeInTheDocument();
+    expect(screen.getByText(/Accepted formats: \.fig \(native\) or \.json/i)).toBeInTheDocument();
+  });
+
   it('renders upload progress, validation success, and failure states without [object Object]', () => {
     const { unmount } = render(
       <FigmaPanel

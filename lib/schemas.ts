@@ -62,7 +62,7 @@ export type ProjectCapabilities = {
   }>;
   target: {
     platform: 'elementor';
-    status: 'unavailable';
+    status: 'available' | 'unavailable';
     architectures: ElementorArchitecture[];
     licenseModes: ElementorLicenseMode[];
     unavailableReason: string;
@@ -72,13 +72,13 @@ export type ProjectCapabilities = {
 
 export type SourceImportSummary = {
   id: string;
-  kind: 'FIGMA_FILE' | 'FRAMER_SITE';
+  kind: 'REACT_NEXT_PROJECT' | 'FIGMA_FILE' | 'FRAMER_SITE';
   status: 'READY' | 'FAILED';
   inputUrl?: string | null;
   fileKey?: string | null;
   fileName?: string | null;
   summary?: Record<string, unknown> | null;
-  diagnostics?: Array<{ code?: string; message: string }> | null;
+  diagnostics?: Array<{ code?: string; severity?: string; message: string; sourcePath?: string }> | null;
   errorCode?: string | null;
   errorMessage?: string | null;
   createdAt: string;

@@ -87,22 +87,29 @@ The frontend is designed for user interaction only. It provides:
 - Authentication pages: login, register, sign out flow
 - Dashboard with overview cards, project summary, queue overview
 - Project creation and listing
-- Source-aware intake UI (`/projects/new`) with three source cards: a
-  React/Next.js ZIP dropzone, a Figma file-JSON uploader (direct upload, parsed
-  locally), and a Framer published-site URL analyzer. The selected source type is
-  a single state that drives all input controls, validation, and the conversion
-  reference.
+- Source-aware intake UI (`/projects/new`) with three modular source features:
+  - `features/react-nextjs/` — React/Next.js ZIP dropzone (up to 500 MiB with
+    direct and multipart upload support), framework detection badge, and static
+    source analysis inspection view (router convention, routes, UI components,
+    style/asset counts).
+  - `features/figma/` — Native `.fig` and `.json` Figma design uploader (up to
+    500 MiB, parsed locally with no Figma account, OAuth, URL, or API token) and
+    parsed page/node inspection summary.
+  - `features/framer/` — Framer published-site URL analyzer.
 - Conversion settings selection
 - Monitoring of conversion stages and diagnostics
 - Artifact review and export actions
 - WordPress-connected site management when available
 
-Files in the current frontend project are organized by feature and responsibility, for example:
+Files in the frontend project are organized by feature and responsibility:
 
 - `app/` — routes and page entry points
-- `components/` — reusable UI blocks and layout
-- `features/` — auth, projects, uploads, conversions, artifact UI
-- `lib/` — API client, schemas, utilities and error handling
+- `components/` — reusable shared UI blocks and layout
+- `features/react-nextjs/` — React/Next.js `components/`, `hooks/`, `services/`, `types/`, `tests/`
+- `features/figma/` — Figma `components/`, `hooks/`, `services/`, `types/`, `tests/`
+- `features/framer/` — Framer `components/`, `services/`, `types/`
+- `features/projects/`, `features/conversions/`, `features/artifacts/`, `features/uploads/`
+- `lib/` — API client, schemas, utilities, and error handling
 
 ### 3.2 API Layer
 
@@ -413,7 +420,10 @@ GET /api/v1/capabilities
 Purpose:
 
 - return source intake availability, accepted formats, and upload limits
-- report Elementor conversion as unavailable until the approved DIR/compiler exist
+- report Elementor conversion capability for each source type; Figma and Framer
+  conversions are backend-implemented (they create queued jobs that run the
+  Markdown-driven pipeline), while React/Next.js and screenshot conversions
+  remain unavailable (`501 CONVERSION_PIPELINE_UNAVAILABLE`)
 - require the normal authenticated API session
 
 ---

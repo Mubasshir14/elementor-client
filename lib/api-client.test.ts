@@ -61,7 +61,7 @@ const capabilities = {
     status: 'unavailable',
     architectures: [],
     licenseModes: [],
-    unavailableReason: 'The canonical DIR schema and Elementor compilation pipeline are not present.',
+    unavailableReason: 'AI conversion is disabled. Set AI_PROVIDER, AI_API_KEY, and AI_MODEL on the API server.',
   },
   defaults: null,
 };
@@ -105,12 +105,49 @@ describe('ApiClient capabilities and conversion requests', () => {
   it('rejects an unsupported capability response instead of trusting it', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ...capabilities,
-      target: { ...capabilities.target, status: 'available' },
+      target: { ...capabilities.target, status: 'enabled', architectures: ['atomic'] },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
 
     const client = new ApiClient({ baseUrl: 'http://localhost:4000/api/v1' });
     await expect(client.getCapabilities()).rejects.toThrow('unsupported conversion capabilities');
+  });
+
+  it('rejects inconsistent availability where a source is available but the target is not', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...capabilities,
+      sourceTypes: capabilities.sourceTypes.map((source) =>
+        source.id === 'figma' ? { ...source, conversionAvailable: true } : source,
+      ),
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000/api/v1' });
+    await expect(client.getCapabilities()).rejects.toThrow('unsupported conversion capabilities');
+  });
+
+  it('accepts a runtime-computed available capability response', async () => {
+    const available = {
+      ...capabilities,
+      sourceTypes: capabilities.sourceTypes.map((source) =>
+        source.id === 'screenshot'
+          ? source
+          : { ...source, conversionAvailable: true },
+      ),
+      target: {
+        ...capabilities.target,
+        status: 'available' as const,
+        unavailableReason: 'Native Elementor conversion is available.',
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(available), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000/api/v1' });
+    await expect(client.getCapabilities()).resolves.toEqual(available);
   });
 
   it('forwards conversion options to the conversion-job endpoint', async () => {

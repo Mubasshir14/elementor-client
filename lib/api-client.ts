@@ -70,7 +70,7 @@ export function isProjectCapabilities(value: unknown): value is ProjectCapabilit
         !formats.includes('.json') ||
         item.maxBytes === null ||
         item.frameworkAutoDetection !== false ||
-        item.conversionAvailable !== false ||
+        typeof item.conversionAvailable !== 'boolean' ||
         item.importMethod !== 'file-upload';
     }
     if (item.id === 'framer') {
@@ -78,7 +78,7 @@ export function isProjectCapabilities(value: unknown): value is ProjectCapabilit
         (item.acceptedFormats as unknown[]).length !== 0 ||
         item.maxBytes !== null ||
         item.frameworkAutoDetection !== false ||
-        item.conversionAvailable !== false ||
+        typeof item.conversionAvailable !== 'boolean' ||
         item.importMethod !== 'published-site-url';
     }
     return item.status !== 'unavailable' ||
@@ -100,7 +100,7 @@ export function isProjectCapabilities(value: unknown): value is ProjectCapabilit
     typeof reactZip.maxBytes !== 'number' ||
     reactZip.maxBytes <= 0 ||
     reactZip.frameworkAutoDetection !== true ||
-    reactZip.conversionAvailable !== false ||
+    typeof reactZip.conversionAvailable !== 'boolean' ||
     reactZip.importMethod !== 'zip-upload'
   ) {
     return false;
@@ -109,10 +109,14 @@ export function isProjectCapabilities(value: unknown): value is ProjectCapabilit
     return false;
   }
   const target = capabilities.target as Record<string, unknown>;
+  const sourceAvailable = (capabilities.sourceTypes as Record<string, unknown>[]).some(
+    (item) => item.id !== 'screenshot' && item.conversionAvailable === true,
+  );
   if (
     Object.keys(target).length !== 5 ||
     target.platform !== 'elementor' ||
-    target.status !== 'unavailable' ||
+    (target.status !== 'available' && target.status !== 'unavailable') ||
+    (sourceAvailable && target.status !== 'available') ||
     !Array.isArray(target.architectures) ||
     target.architectures.length !== 0 ||
     !Array.isArray(target.licenseModes) ||
@@ -235,7 +239,7 @@ export class ApiClient {
   }
 
   listProjects() {
-    return this.request<Project[]>('/projects');
+    return this.request<{ projects: ProjectSummary[] }>('/projects');
   }
 
   createProject(input: { name: string }) {
@@ -254,6 +258,9 @@ export class ApiClient {
     return this.request<{
       upload: { id: string; sourceType: string; status: string; sizeBytes: string };
       contentUrl: string;
+      uploadStrategy?: 'direct' | 'multipart';
+      multipartPartSizeBytes?: number;
+      presignedPutUrl?: string;
     }>(`/projects/${projectId}/uploads`, {
       method: 'POST',
       body: JSON.stringify(input),
@@ -302,12 +309,141 @@ export class ApiClient {
     });
   }
 
+  async uploadToPresignedPutUrl(
+    presignedUrl: string,
+    file: File | Blob,
+    contentType: string,
+    onProgress?: (percentage: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (signal?.aborted) {
+      throw new DOMException('Upload aborted by user', 'AbortError');
+    }
+    const response = await fetch(presignedUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': contentType },
+      body: file,
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      throw new ApiResponseError(response.status, undefined);
+    }
+    onProgress?.(100);
+  }
+
+  initMultipartUpload(uploadId: string) {
+    return this.request<{
+      uploadId: string;
+      multipartUploadId: string;
+      partSizeBytes: number;
+    }>(`/uploads/${uploadId}/multipart/init`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  getMultipartPartUrl(uploadId: string, partNumber: number, contentLength?: number) {
+    return this.request<{
+      uploadId: string;
+      partNumber: number;
+      url: string;
+      expiresInSeconds: number;
+      directPartPath: string;
+    }>(`/uploads/${uploadId}/multipart/part-url`, {
+      method: 'POST',
+      body: JSON.stringify({
+        partNumber,
+        ...(contentLength !== undefined ? { contentLength } : {}),
+      }),
+    });
+  }
+
+  async uploadPartToPresignedUrl(
+    presignedUrl: string,
+    chunk: Blob,
+    maxAttempts = 3,
+    signal?: AbortSignal,
+  ): Promise<{ etag: string; sizeBytes: number }> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (signal?.aborted) {
+        throw new DOMException('Upload aborted by user', 'AbortError');
+      }
+      try {
+        const response = await fetch(presignedUrl, {
+          method: 'PUT',
+          body: chunk,
+          ...(signal ? { signal } : {}),
+        });
+        if (response.ok) {
+          const etag = response.headers.get('ETag') ?? response.headers.get('etag');
+          if (!etag) {
+            throw new Error(
+              'Presigned upload succeeded, but the storage response did not expose an ETag header (check Backblaze B2 CORS ExposeHeaders configuration).',
+            );
+          }
+          return { etag, sizeBytes: chunk.size };
+        }
+        if (response.status >= 500 || response.status === 429) {
+          lastError = new ApiResponseError(response.status, undefined);
+        } else {
+          throw new ApiResponseError(response.status, undefined);
+        }
+      } catch (err) {
+        lastError = err;
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          throw err;
+        }
+        if (err instanceof ApiResponseError && err.status < 500 && err.status !== 429) {
+          throw err;
+        }
+      }
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new ApiNetworkError(lastError);
+  }
+
+  uploadMultipartPart(uploadId: string, partNumber: number, chunk: Blob) {
+    return this.request<{
+      uploadId: string;
+      partNumber: number;
+      etag: string;
+      sizeBytes: number;
+    }>(`/uploads/${uploadId}/multipart/parts/${partNumber}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: chunk,
+    });
+  }
+
+  completeMultipartUpload(uploadId: string, parts: Array<{ partNumber: number; etag: string }>) {
+    return this.request<{
+      uploadId: string;
+      sizeBytes: number;
+      etag?: string;
+    }>(`/uploads/${uploadId}/multipart/complete`, {
+      method: 'POST',
+      body: JSON.stringify({ parts }),
+    });
+  }
+
+  abortMultipartUpload(uploadId: string) {
+    return this.request<{ uploadId: string; status: string }>(`/uploads/${uploadId}/multipart/abort`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
   completeUpload(uploadId: string) {
     return this.request<{
       upload: {
         id: string;
         sourceType: string;
         detectedFramework?: 'react' | 'nextjs';
+        sourceImportId?: string;
+        validation?: Record<string, unknown>;
         status: 'READY';
         sha256: string;
         completedAt: string;
@@ -317,6 +453,19 @@ export class ApiClient {
       method: 'POST',
       body: JSON.stringify({}),
     });
+  }
+
+  getReactNextInspection(projectId: string, uploadId: string) {
+    return this.request<{
+      uploadId: string;
+      sourceImportId: string;
+      status: string;
+      fileName: string;
+      detectedFramework: 'react' | 'nextjs';
+      sizeBytes: string;
+      sha256: string;
+      snapshot: Record<string, unknown>;
+    }>(`/projects/${projectId}/react-nextjs/uploads/${uploadId}/inspection`);
   }
 
   getProject(projectId: string) {
@@ -348,14 +497,89 @@ export class ApiClient {
   }
 
   createConversion(projectId: string, input: ConversionSettingsValue & { uploadId?: string; sourceImportId?: string; idempotencyKey: string }) {
-    return this.request<Conversion>(`/projects/${projectId}/conversions`, {
+    return this.request<{ conversion: { id: string; status: string }; idempotentReplay?: boolean } & Partial<Conversion>>(`/projects/${projectId}/conversions`, {
       method: 'POST',
       body: JSON.stringify(input),
     });
   }
 
   getConversion(conversionId: string) {
-    return this.request<Conversion>(`/conversions/${conversionId}`);
+    return this.request<{
+      conversion: {
+        id: string;
+        status: string;
+        errorCode?: string | null;
+        errorMessage?: string | null;
+        attempt?: number;
+        sourcePlatform?: string;
+        targetProfile?: Record<string, unknown>;
+        rules?: Array<{ fileName: string; version: string; sha256: string }>;
+        createdAt: string;
+        updatedAt: string;
+      };
+    } & Partial<Conversion>>(`/conversions/${conversionId}`);
+  }
+
+  getConversionStages(conversionId: string) {
+    return this.request<{
+      stages: Array<{
+        name: string;
+        status: string;
+        inputHash?: string | null;
+        outputKey?: string | null;
+        diagnostics?: unknown;
+        startedAt?: string | null;
+        completedAt?: string | null;
+      }>;
+    }>(`/conversions/${conversionId}/stages`);
+  }
+
+  getConversionReports(conversionId: string) {
+    return this.request<{
+      report: {
+        diagnostics: Array<{ code?: string; severity?: string; message: string; stage?: string }>;
+        createdAt: string;
+      } | null;
+    }>(`/conversions/${conversionId}/reports`);
+  }
+
+  listConversionArtifacts(conversionId: string) {
+    return this.request<{
+      artifacts: Array<{
+        id: string;
+        fileName: string;
+        contentType: string;
+        sizeBytes: string;
+        sha256: string;
+        createdAt: string;
+      }>;
+    }>(`/conversions/${conversionId}/artifacts`);
+  }
+
+  async downloadArtifactBlob(artifactId: string): Promise<{ blob: Blob; fileName: string }> {
+    const headers = new Headers();
+    if (this.token) {
+      headers.set('Authorization', `Bearer ${this.token}`);
+    }
+    const response = await fetch(`${this.baseUrl}/artifacts/${artifactId}/download`, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = undefined;
+      }
+      throw new ApiResponseError(response.status, payload);
+    }
+    const disposition = response.headers.get('Content-Disposition') ?? '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const fileName = match?.[1] ?? 'elementor.json';
+    const blob = await response.blob();
+    return { blob, fileName };
   }
 
   retryConversion(conversionId: string) {

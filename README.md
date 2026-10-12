@@ -4,26 +4,25 @@ This repository contains the Next.js frontend for the Design-to-Elementor platfo
 
 ## Overview
 
-The frontend provides authenticated project creation and a source-aware intake
-page (`/projects/new`). Users pick one of three source cards, each with its own
-input controls and real backend integration:
+The frontend provides authenticated project creation and a modular, source-aware
+intake workflow (`/projects/new`). Source-specific UI, hooks, services, types,
+and tests are isolated under `features/`:
 
-- **React / Next.js Project ZIP** — drag-and-drop ZIP dropzone with automatic
-  framework detection. The archive is validated server-side; code is never
-  executed in the browser.
-- **Figma Design File** — a direct drag-and-drop uploader for a Figma REST API
-  file JSON export. The file is uploaded and parsed locally; no Figma account,
-  OAuth connection, file URL, or API token is required. Native .fig files are
-  rejected with a clear message and export instructions.
-- **Framer Project** — a published-site URL field analyzed server-side over
-  HTTPS with SSRF protections. Labeled as published-site analysis, not native
-  Framer recovery.
+- **React / Next.js Project ZIP** (`features/react-nextjs/`) — drag-and-drop ZIP
+  dropzone (up to 500 MiB, supporting direct and multipart uploads) with
+  automatic React vs. Next.js detection and a static source analysis inspection
+  view (router convention, routes, UI components, styles, and assets). Uploaded
+  archives are inspected server-side without executing code.
+- **Figma Design File** (`features/figma/`) — direct drag-and-drop uploader (up
+  to 500 MiB) for a **native Figma `.fig` file** (File → Save local copy) or a
+  Figma REST API file JSON export (`.json`). The file is uploaded and parsed
+  locally with zero OAuth, account connection, file URL, or API token required.
+- **Framer Project** (`features/framer/`) — published-site URL field analyzed
+  server-side over HTTPS with SSRF protections.
 
 The selected source type is a single authoritative state that drives the input
-controls, upload/import flow, and subsequent conversion reference. Switching
-sources clears incompatible input and validation. Elementor conversion is shown
-as unavailable until the approved DIR and Elementor compiler are available; the
-capabilities endpoint is the source of truth.
+controls, upload/import flow, inspection summary, and subsequent conversion
+reference. Switching sources clears incompatible input and validation.
 
 The browser never performs conversion logic, code execution, or publish operations. Those responsibilities remain with the backend API.
 
@@ -32,7 +31,8 @@ The browser never performs conversion logic, code execution, or publish operatio
 - Next.js (App Router)
 - React + TypeScript
 - Tailwind CSS
-- Centralized typed API client
+- Feature-based modular architecture (`features/react-nextjs`, `features/figma`, `features/framer`, `features/conversions`, `features/artifacts`, `features/projects`)
+- Centralized typed API client (`lib/api-client.ts`)
 - Accessible and responsive UI components
 
 ## Setup

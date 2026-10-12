@@ -4,6 +4,9 @@ import { useState } from 'react';
 import { apiClient } from '@/lib/api-client';
 import { getErrorMessage } from '@/lib/error-handling';
 import { ProjectCapabilities, SourceImportSummary, SourceType } from '@/lib/schemas';
+import { uploadReactNextZipFile } from '@/features/react-nextjs/services/react-nextjs.service';
+import { uploadFigmaDesignFile } from '@/features/figma/services/figma.service';
+import { importFramerPublishedSite } from '@/features/framer/services/framer.service';
 
 export type IntakeSubmitter = {
   onProgress: (n: number | null) => void;
@@ -11,8 +14,14 @@ export type IntakeSubmitter = {
   onValidation: (v: {
     framework?: string;
     sha256?: string;
-    pageCount?: number;
+    routerConvention?: string;
+    packageName?: string;
+    sourceFileCount?: number;
+    routeCount?: number;
     componentCount?: number;
+    styleFileCount?: number;
+    assetCount?: number;
+    pageCount?: number;
     styleCount?: number;
     nodeCount?: number;
   } | null) => void;
@@ -27,7 +36,6 @@ type Props = {
   framerSiteUrl: string;
   intake: IntakeSubmitter;
 };
-
 
 export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, intake }: Props) {
   const [name, setName] = useState('');
@@ -66,20 +74,28 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
         }
         intake.onState('uploading');
         intake.onProgress(0);
-        const contentType = file.type === 'application/x-zip-compressed' ? 'application/x-zip-compressed' : 'application/zip';
-        const { upload } = await apiClient.reserveUpload(projectId, {
-          sourceType: 'react-next-zip',
-          fileName: file.name,
-          contentType,
-          sizeBytes: file.size,
-        });
-        await apiClient.uploadContent(upload.id, file, (n) => intake.onProgress(n));
+        const result = await uploadReactNextZipFile(projectId, file, (n) => intake.onProgress(n));
         intake.onState('validating');
-        const result = await apiClient.completeUpload(upload.id);
         intake.onProgress(100);
-        intake.onValidation({ framework: result.upload.detectedFramework, sha256: result.upload.sha256 });
+        const summary = (result.sourceImport?.summary ?? {}) as Record<string, unknown>;
+        intake.onValidation({
+          framework: result.upload.detectedFramework,
+          sha256: result.upload.sha256,
+          routerConvention: typeof summary.routerConvention === 'string' ? summary.routerConvention : undefined,
+          packageName: typeof summary.packageName === 'string' ? summary.packageName : undefined,
+          sourceFileCount: typeof summary.sourceFileCount === 'number' ? summary.sourceFileCount : undefined,
+          routeCount: typeof summary.routeCount === 'number' ? summary.routeCount : undefined,
+          componentCount: typeof summary.componentCount === 'number' ? summary.componentCount : undefined,
+          styleFileCount: typeof summary.styleFileCount === 'number' ? summary.styleFileCount : undefined,
+          assetCount: typeof summary.assetCount === 'number' ? summary.assetCount : undefined,
+        });
+        if (result.sourceImport) {
+          intake.onImportResult(result.sourceImport);
+        }
         intake.onState('ready');
-        setSuccess(`${result.upload.detectedFramework === 'nextjs' ? 'Next.js' : 'React'} project ZIP validated and added. ${capabilities?.target.unavailableReason ?? 'Conversion is not currently available.'}`);
+        setSuccess(
+          `${result.upload.detectedFramework === 'nextjs' ? 'Next.js' : 'React'} project ZIP validated and added. ${capabilities?.target.unavailableReason ?? 'Conversion is not currently available.'}`,
+        );
         return;
       }
 
@@ -88,18 +104,10 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
           window.location.href = '/projects';
           return;
         }
-        const isFig = file.name.toLowerCase().endsWith('.fig');
         intake.onState('uploading');
         intake.onProgress(0);
-        const { upload } = await apiClient.reserveUpload(projectId, {
-          sourceType: 'figma',
-          fileName: file.name,
-          contentType: isFig ? 'application/octet-stream' : 'application/json',
-          sizeBytes: file.size,
-        });
-        await apiClient.uploadContent(upload.id, file, (n) => intake.onProgress(n), isFig ? 'application/octet-stream' : 'application/json');
+        const result = await uploadFigmaDesignFile(projectId, file, (n) => intake.onProgress(n));
         intake.onState('validating');
-        const result = await apiClient.completeUpload(upload.id);
         intake.onProgress(100);
         const summary = (result.sourceImport?.summary ?? {}) as Record<string, unknown>;
         intake.onValidation({
@@ -111,7 +119,9 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
         });
         if (result.sourceImport) intake.onImportResult(result.sourceImport);
         intake.onState('ready');
-        setSuccess(`Figma design “${result.sourceImport?.fileName ?? file.name}” parsed locally. ${capabilities?.target.unavailableReason ?? 'Conversion is not currently available.'}`);
+        setSuccess(
+          `Figma design “${result.sourceImport?.fileName ?? file.name}” parsed locally. ${capabilities?.target.unavailableReason ?? 'Conversion is not currently available.'}`,
+        );
         return;
       }
 
@@ -120,7 +130,7 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
           throw new Error('Paste a published Framer site URL, then analyze it.');
         }
         intake.onState('importing');
-        const { sourceImport } = await apiClient.importFramer(projectId, { siteUrl: framerSiteUrl.trim() });
+        const { sourceImport } = await importFramerPublishedSite(projectId, framerSiteUrl);
         intake.onImportResult(sourceImport);
         intake.onState('ready');
         setSuccess(`Framer published site analyzed. ${capabilities?.target.unavailableReason ?? ''}`);
@@ -132,7 +142,11 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
       const detail = getErrorMessage(err);
       intake.onState('failed');
       intake.onError(detail);
-      setError(projectCreated ? `The project was created, but the source intake could not be completed: ${detail}` : detail);
+      setError(
+        projectCreated
+          ? `The project was created, but the source intake could not be completed: ${detail}`
+          : detail,
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -144,19 +158,45 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
         <label className="label" htmlFor="project-name">
           Project name
         </label>
-        <input id="project-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Landing page refresh" required disabled={Boolean(createdProjectId)} />
+        <input
+          id="project-name"
+          className="input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Landing page refresh"
+          required
+          disabled={Boolean(createdProjectId)}
+        />
       </div>
 
-      {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div> : null}
+      {error ? (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div>
+      ) : null}
       {success ? (
         <div role="status" className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           <p>{success}</p>
-          <a className="font-medium underline" href="/projects">View projects</a>
+          <a className="font-medium underline" href="/projects">
+            View projects
+          </a>
         </div>
       ) : null}
 
       <button type="submit" className="btn-primary" disabled={isSubmitting}>
-        {isSubmitting ? 'Working…' : sourceType === 'react-next-zip' ? (createdProjectId && file ? 'Retry ZIP upload' : file ? 'Create project and validate ZIP' : 'Create project') : sourceType === 'figma' ? (createdProjectId && file ? 'Retry Figma upload' : file ? 'Create project and parse Figma file' : 'Create project') : 'Create project and analyze Framer site'}
+        {isSubmitting
+          ? 'Working…'
+          : sourceType === 'react-next-zip'
+            ? createdProjectId && file
+              ? 'Retry ZIP upload'
+              : file
+                ? 'Create project and validate ZIP'
+                : 'Create project'
+            : sourceType === 'figma'
+              ? createdProjectId && file
+                ? 'Retry Figma upload'
+                : file
+                  ? 'Create project and parse Figma file'
+                  : 'Create project'
+              : 'Create project and analyze Framer site'}
       </button>
     </form>
   );

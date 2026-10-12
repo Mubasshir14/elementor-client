@@ -61,7 +61,7 @@ const capabilities: ProjectCapabilities = {
     status: 'unavailable',
     architectures: [],
     licenseModes: [],
-    unavailableReason: 'The canonical DIR schema and Elementor compilation pipeline are not present.',
+    unavailableReason: 'AI conversion is disabled. Set AI_PROVIDER, AI_API_KEY, and AI_MODEL on the API server to enable conversion.',
   },
   defaults: null,
 };
@@ -89,7 +89,7 @@ describe('NewProjectPage capabilities loading', () => {
     await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Source type' })).toBeInTheDocument());
     expect(getCapabilities).toHaveBeenNthCalledWith(2, { refresh: true });
     expect(screen.getByRole('radio', { name: /React \/ Next\.js Project ZIP/ })).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByText(/canonical DIR schema and Elementor compilation pipeline/i)).toBeInTheDocument();
+    expect(screen.getByText(/AI conversion is disabled/i)).toBeInTheDocument();
   });
 
   it('renders three source cards and switches panels without stale input', async () => {

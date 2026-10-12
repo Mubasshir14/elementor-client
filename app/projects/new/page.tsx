@@ -24,8 +24,14 @@ export default function NewProjectPage() {
   const [validation, setValidation] = useState<{
     framework?: string;
     sha256?: string;
-    pageCount?: number;
+    routerConvention?: string;
+    packageName?: string;
+    sourceFileCount?: number;
+    routeCount?: number;
     componentCount?: number;
+    styleFileCount?: number;
+    assetCount?: number;
+    pageCount?: number;
     styleCount?: number;
     nodeCount?: number;
   } | null>(null);
@@ -117,7 +123,7 @@ export default function NewProjectPage() {
           <div className="space-y-6">
             <SourceSelector capabilities={capabilities} selectedSourceType={selectedSourceType} onSourceTypeChange={selectSource} intakeState={intakeState} />
             {selectedSourceType === 'react-next-zip' ? (
-              <ZipDropzone capabilities={capabilities} selectedFile={selectedFile} intakeState={intakeState} progress={progress} statusDetail={statusDetail} error={fileError ?? remoteError} validation={validation} onFileChange={(file, error) => {
+              <ZipDropzone capabilities={capabilities} selectedFile={selectedFile} intakeState={intakeState} progress={progress} statusDetail={statusDetail} error={fileError ?? remoteError} validation={validation} importResult={importResult} onFileChange={(file, error) => {
                 setSelectedFile(file);
                 setFileError(error);
                 if (file) setIntakeState('selected');

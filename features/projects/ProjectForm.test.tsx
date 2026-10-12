@@ -153,6 +153,61 @@ describe('ProjectForm source intake', () => {
     expect(onImportResult).toHaveBeenCalledWith(expect.objectContaining({ id: 'import-id', kind: 'FIGMA_FILE' }));
   });
 
+  it('uploads a native .fig file with the binary MIME type while JSON keeps application/json', async () => {
+    vi.spyOn(apiClient, 'createProject').mockResolvedValue({
+      project: { id: 'project-id', name: 'Figma native', createdAt: '2026-10-11T00:00:00.000Z', updatedAt: '2026-10-11T00:00:00.000Z' },
+    });
+    const reserveUpload = vi.spyOn(apiClient, 'reserveUpload').mockResolvedValue({
+      upload: { id: 'upload-id', sourceType: 'FIGMA', status: 'PENDING', sizeBytes: '10' },
+      contentUrl: '/api/v1/uploads/upload-id/content',
+    });
+    const uploadContent = vi.spyOn(apiClient, 'uploadContent').mockResolvedValue(undefined);
+    const completeUpload = vi.spyOn(apiClient, 'completeUpload').mockResolvedValue({
+      upload: { id: 'upload-id', sourceType: 'FIGMA', status: 'READY', sha256: 'b'.repeat(64), completedAt: '2026-10-11T00:00:00.000Z' },
+      sourceImport: {
+        id: 'import-id', kind: 'FIGMA_FILE', status: 'READY', inputUrl: null,
+        fileKey: null, fileName: 'design.fig', summary: { pageCount: 1, nodeCount: 5 }, diagnostics: [],
+        createdAt: '2026-10-11T00:00:00.000Z', updatedAt: '2026-10-11T00:00:00.000Z',
+      },
+    });
+    // Browsers report an empty string (or a generic binary type) for native .fig
+    // files, so the form must force application/octet-stream instead of trusting file.type.
+    const file = new File(['PK\x03\x04canvas.fig'], 'design.fig', { type: '' });
+    const onImportResult = vi.fn();
+    render(<ProjectForm capabilities={capabilities} sourceType="figma" file={file} framerSiteUrl="" intake={{ onProgress: vi.fn(), onState: vi.fn(), onValidation: vi.fn(), onImportResult, onError: vi.fn() }} />);
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Figma native' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project and parse Figma file' }));
+    await waitFor(() => expect(reserveUpload).toHaveBeenCalledWith('project-id', {
+      sourceType: 'figma',
+      fileName: 'design.fig',
+      contentType: 'application/octet-stream',
+      sizeBytes: file.size,
+    }));
+    expect(uploadContent).toHaveBeenCalledWith('upload-id', file, expect.any(Function), 'application/octet-stream');
+    expect(completeUpload).toHaveBeenCalledWith('upload-id');
+    expect(onImportResult).toHaveBeenCalledWith(expect.objectContaining({ id: 'import-id', kind: 'FIGMA_FILE' }));
+  });
+
+  it('surfaces parser failures instead of reporting a successful Figma parse', async () => {
+    vi.spyOn(apiClient, 'createProject').mockResolvedValue({
+      project: { id: 'project-id', name: 'Figma broken', createdAt: '2026-10-11T00:00:00.000Z', updatedAt: '2026-10-11T00:00:00.000Z' },
+    });
+    vi.spyOn(apiClient, 'reserveUpload').mockResolvedValue({
+      upload: { id: 'upload-id', sourceType: 'FIGMA', status: 'PENDING', sizeBytes: '10' },
+      contentUrl: '/api/v1/uploads/upload-id/content',
+    });
+    vi.spyOn(apiClient, 'uploadContent').mockResolvedValue(undefined);
+    vi.spyOn(apiClient, 'completeUpload').mockRejectedValue(new Error('The uploaded .fig archive could not be opened.'));
+    const file = new File(['not-a-fig'], 'broken.fig', { type: 'application/octet-stream' });
+    const onError = vi.fn();
+    const onImportResult = vi.fn();
+    render(<ProjectForm capabilities={capabilities} sourceType="figma" file={file} framerSiteUrl="" intake={{ onProgress: vi.fn(), onState: vi.fn(), onValidation: vi.fn(), onImportResult, onError }} />);
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Figma broken' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project and parse Figma file' }));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining('could not be opened')));
+    expect(onImportResult).not.toHaveBeenCalled();
+  });
+
   it('analyzes a Framer site through the source-aware API and preserves the source reference', async () => {
     vi.spyOn(apiClient, 'createProject').mockResolvedValue({
       project: { id: 'project-id', name: 'Framer import', createdAt: '2026-10-11T00:00:00.000Z', updatedAt: '2026-10-11T00:00:00.000Z' },
