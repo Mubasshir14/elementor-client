@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ApiNetworkError, ApiResponseError, getErrorMessage } from './error-handling';
+import { ApiNetworkError, ApiResponseError, ApiStorageCorsError, getErrorMessage } from './error-handling';
 
 describe('getErrorMessage', () => {
   it('normalizes string and top-level message errors', () => {
@@ -38,6 +38,21 @@ describe('getErrorMessage', () => {
     const expected = 'Unable to connect to the server. Check your connection and try again.';
     expect(getErrorMessage(new ApiNetworkError())).toBe(expected);
     expect(getErrorMessage(new TypeError('Failed to fetch'))).toBe(expected);
+  });
+
+  it('reports a distinct CORS/storage message for browser-blocked presigned uploads', () => {
+    const corsMessage = getErrorMessage(new ApiStorageCorsError(new TypeError('Failed to fetch')));
+
+    // It must NOT claim the app server is offline, which is the old misleading behaviour.
+    expect(corsMessage).not.toBe('Unable to connect to the server. Check your connection and try again.');
+    expect(corsMessage).toMatch(/CORS|cross-origin/i);
+    expect(corsMessage).toMatch(/storage/i);
+    // It must remain distinct from credential/permission/bandwidth-cap errors, which
+    // arrive as real HTTP responses and surface the backend-provided message.
+    expect(getErrorMessage(new ApiResponseError(403, { error: { code: 'B2_ACCESS_DENIED', message: 'Access denied' } })))
+      .toBe('Access denied');
+    expect(getErrorMessage(new ApiResponseError(403, { error: { code: 'B2_BANDWIDTH_CAP', message: 'Daily download cap reached' } })))
+      .toBe('Daily download cap reached');
   });
 
   it('never exposes object coercion or an empty unexpected error', () => {

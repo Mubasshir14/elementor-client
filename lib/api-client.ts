@@ -1,5 +1,5 @@
 import { Artifact, AuthSession, Conversion, ConversionSettingsValue, Project, ProjectCapabilities, ProjectSummary, SourceImportSummary, User, WordPressSite } from '@/lib/schemas';
-import { ApiNetworkError, ApiResponseError } from '@/lib/error-handling';
+import { ApiNetworkError, ApiResponseError, ApiStorageCorsError } from '@/lib/error-handling';
 
 const DEFAULT_API_BASE = 'http://localhost:4000/api/v1';
 
@@ -319,12 +319,28 @@ export class ApiClient {
     if (signal?.aborted) {
       throw new DOMException('Upload aborted by user', 'AbortError');
     }
-    const response = await fetch(presignedUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': contentType },
-      body: file,
-      ...(signal ? { signal } : {}),
-    });
+    let response: Response;
+    try {
+      response = await fetch(presignedUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: file,
+        ...(signal ? { signal } : {}),
+      });
+    } catch (error) {
+      // A browser-blocked cross-origin request (CORS preflight rejection) or an
+      // unreachable storage host surfaces here as a fetch TypeError. That is a
+      // storage/CORS problem, not the app server being offline, so surface it as
+      // a distinct storage error rather than a generic network error. Abort is
+      // re-thrown untouched so callers can distinguish user cancellation.
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw error;
+      }
+      if (error instanceof TypeError) {
+        throw new ApiStorageCorsError(error);
+      }
+      throw error;
+    }
     if (!response.ok) {
       throw new ApiResponseError(response.status, undefined);
     }
@@ -393,6 +409,13 @@ export class ApiClient {
         lastError = err;
         if (err instanceof DOMException && err.name === 'AbortError') {
           throw err;
+        }
+        // A browser-blocked cross-origin request (CORS preflight rejection) or an
+        // unreachable storage host surfaces as a fetch TypeError. That is a
+        // storage/CORS problem, not the app server being offline, and retrying a
+        // deterministic CORS block will not help — surface it immediately.
+        if (err instanceof TypeError) {
+          throw new ApiStorageCorsError(err);
         }
         if (err instanceof ApiResponseError && err.status < 500 && err.status !== 429) {
           throw err;
@@ -562,6 +585,32 @@ export class ApiClient {
       headers.set('Authorization', `Bearer ${this.token}`);
     }
     const response = await fetch(`${this.baseUrl}/artifacts/${artifactId}/download`, {
+      method: 'GET',
+      headers,
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = undefined;
+      }
+      throw new ApiResponseError(response.status, payload);
+    }
+    const disposition = response.headers.get('Content-Disposition') ?? '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const fileName = match?.[1] ?? 'elementor.json';
+    const blob = await response.blob();
+    return { blob, fileName };
+  }
+
+  async downloadConversionArtifact(conversionId: string): Promise<{ blob: Blob; fileName: string }> {
+    const headers = new Headers();
+    if (this.token) {
+      headers.set('Authorization', `Bearer ${this.token}`);
+    }
+    const response = await fetch(`${this.baseUrl}/conversions/${conversionId}/artifacts/download`, {
       method: 'GET',
       headers,
       cache: 'no-store',

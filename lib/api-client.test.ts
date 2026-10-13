@@ -225,3 +225,65 @@ describe('ApiClient capabilities and conversion requests', () => {
     expect(completed.sourceImport?.kind).toBe('FIGMA_FILE');
   });
 });
+
+describe('ApiClient presigned browser upload CORS behaviour', () => {
+  it('maps a browser-blocked cross-origin presigned PUT (fetch TypeError) to a distinct storage CORS error, not a server-offline error', async () => {
+    // A CORS preflight rejection surfaces as a fetch TypeError. It must not be
+    // reported as "Unable to connect to the server".
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000/api/v1' });
+    const file = new File(['PK\x03\x04'], 'app.zip', { type: 'application/zip' });
+
+    await expect(
+      client.uploadToPresignedPutUrl('https://s3.us-east-005.backblazeb2.com/design-to-elementor/uploads/x.zip', file, 'application/zip'),
+    ).rejects.toMatchObject({ name: 'ApiStorageCorsError' });
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://s3.us-east-005.backblazeb2.com/design-to-elementor/uploads/x.zip');
+  });
+
+  it('still surfaces real HTTP responses (credential/permission/cap) from the storage host as ApiResponseError, not CORS', async () => {
+    // A 403 from B2 is a real response (not a CORS block) and must map to
+    // ApiResponseError so the backend-provided message is preserved.
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      '<Error><Code>AccessDenied</Code><Message>Access denied</Message></Error>',
+      { status: 403 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000/api/v1' });
+    const file = new File(['PK\x03\x04'], 'app.zip', { type: 'application/zip' });
+
+    await expect(
+      client.uploadToPresignedPutUrl('https://s3.us-east-005.backblazeb2.com/design-to-elementor/uploads/x.zip', file, 'application/zip'),
+    ).rejects.toMatchObject({ name: 'ApiResponseError', status: 403 });
+  });
+
+  it('maps a browser-blocked cross-origin multipart part upload (fetch TypeError) to a distinct storage CORS error', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000/api/v1' });
+    const chunk = new Blob([new Uint8Array(1024)]);
+
+    await expect(
+      client.uploadPartToPresignedUrl('https://s3.us-east-005.backblazeb2.com/design-to-elementor/uploads/x.zip?partNumber=1', chunk),
+    ).rejects.toMatchObject({ name: 'ApiStorageCorsError' });
+  });
+
+  it('sends the signed Content-Type header and file body on the presigned PUT so the signature matches', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = new ApiClient({ baseUrl: 'http://localhost:4000/api/v1' });
+    const file = new File(['PK\x03\x04'], 'app.zip', { type: 'application/zip' });
+
+    await client.uploadToPresignedPutUrl('https://s3.us-east-005.backblazeb2.com/design-to-elementor/uploads/x.zip', file, 'application/zip');
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.method).toBe('PUT');
+    expect(init.headers).toEqual({ 'Content-Type': 'application/zip' });
+    expect(init.body).toBe(file);
+  });
+});

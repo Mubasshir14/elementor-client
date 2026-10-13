@@ -2,6 +2,14 @@ type UnknownRecord = Record<string, unknown>;
 
 const UNEXPECTED_ERROR_MESSAGE = 'An unexpected error occurred. Please try again.';
 const NETWORK_ERROR_MESSAGE = 'Unable to connect to the server. Check your connection and try again.';
+// A direct browser upload targets the Backblaze B2 storage endpoint (cross-origin),
+// not the application API server. When the browser blocks that request it is almost
+// always a CORS/preflight rejection (surfaced by fetch as a TypeError) or a network
+// problem reaching storage itself — never "the app server is offline". Keep this
+// distinct from credential, permission, and bandwidth-cap errors (which arrive as
+// real HTTP responses and are handled by ApiResponseError).
+const STORAGE_UPLOAD_ERROR_MESSAGE =
+  'The browser could not reach storage to upload the file. This is usually a cross-origin (CORS) issue on the storage bucket or a network problem reaching the storage service — not the application server. Please retry; if it keeps failing, contact support.';
 
 export class ApiResponseError extends Error {
   constructor(
@@ -17,6 +25,13 @@ export class ApiNetworkError extends Error {
   constructor(cause?: unknown) {
     super(NETWORK_ERROR_MESSAGE, { cause });
     this.name = 'ApiNetworkError';
+  }
+}
+
+export class ApiStorageCorsError extends Error {
+  constructor(cause?: unknown) {
+    super(STORAGE_UPLOAD_ERROR_MESSAGE, { cause });
+    this.name = 'ApiStorageCorsError';
   }
 }
 
@@ -110,6 +125,10 @@ export function getErrorMessage(error: unknown): string {
 
   if (error instanceof ApiNetworkError) {
     return NETWORK_ERROR_MESSAGE;
+  }
+
+  if (error instanceof ApiStorageCorsError) {
+    return STORAGE_UPLOAD_ERROR_MESSAGE;
   }
 
   if (error instanceof ApiResponseError) {
