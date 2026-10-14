@@ -37,18 +37,61 @@ type Props = {
   intake: IntakeSubmitter;
 };
 
+type ReadyConversionSource = {
+  sourceType: 'react-next-zip' | 'figma' | 'framer';
+  uploadId?: string;
+  detectedFramework?: 'react' | 'nextjs';
+  sourceImportId?: string;
+};
+
 export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, intake }: Props) {
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [readySource, setReadySource] = useState<ReadyConversionSource | null>(null);
+  const [isStartingConversion, setIsStartingConversion] = useState(false);
+  const [conversionError, setConversionError] = useState<string | null>(null);
+
+  async function handleStartConversion() {
+    if (!createdProjectId || !readySource || isStartingConversion) return;
+    setIsStartingConversion(true);
+    setConversionError(null);
+    try {
+      const refId = readySource.uploadId ?? readySource.sourceImportId ?? readySource.sourceType;
+      const idempotencyKey = `conv-${createdProjectId}-${refId}`.slice(0, 128);
+      const response = await apiClient.createConversion(createdProjectId, {
+        sourceType: readySource.sourceType,
+        ...(readySource.detectedFramework ? { detectedFramework: readySource.detectedFramework } : {}),
+        ...(readySource.uploadId ? { uploadId: readySource.uploadId } : {}),
+        ...(readySource.sourceImportId ? { sourceImportId: readySource.sourceImportId } : {}),
+        targetProfile: {
+          platform: 'elementor',
+          architecture: 'atomic',
+          licenseMode: 'free',
+        },
+        idempotencyKey,
+      });
+      const conversionId = response?.conversion?.id;
+      if (!conversionId) {
+        throw new Error('Conversion job was created, but the response did not include a conversion ID.');
+      }
+      window.location.href = `/conversions/${conversionId}`;
+    } catch (err) {
+      setConversionError(getErrorMessage(err));
+    } finally {
+      setIsStartingConversion(false);
+    }
+  }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSubmitting(true);
     setError(null);
     setSuccess(null);
+    setConversionError(null);
+    setReadySource(null);
     intake.onError(null);
     let projectCreated = Boolean(createdProjectId);
 
@@ -92,6 +135,13 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
         if (result.sourceImport) {
           intake.onImportResult(result.sourceImport);
         }
+        const resolvedImportId = result.upload.sourceImportId ?? result.sourceImport?.id;
+        setReadySource({
+          sourceType: 'react-next-zip',
+          uploadId: result.upload.id,
+          detectedFramework: result.upload.detectedFramework ?? 'react',
+          ...(resolvedImportId ? { sourceImportId: resolvedImportId } : {}),
+        });
         intake.onState('ready');
         setSuccess(
           `${result.upload.detectedFramework === 'nextjs' ? 'Next.js' : 'React'} project ZIP validated and added. ${capabilities?.target.unavailableReason ?? 'Conversion is not currently available.'}`,
@@ -118,6 +168,14 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
           nodeCount: typeof summary.nodeCount === 'number' ? summary.nodeCount : undefined,
         });
         if (result.sourceImport) intake.onImportResult(result.sourceImport);
+        const resolvedImportId = result.sourceImport?.id ?? result.upload.sourceImportId;
+        if (resolvedImportId) {
+          setReadySource({
+            sourceType: 'figma',
+            uploadId: result.upload.id,
+            sourceImportId: resolvedImportId,
+          });
+        }
         intake.onState('ready');
         setSuccess(
           `Figma design “${result.sourceImport?.fileName ?? file.name}” parsed locally. ${capabilities?.target.unavailableReason ?? 'Conversion is not currently available.'}`,
@@ -132,6 +190,10 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
         intake.onState('importing');
         const { sourceImport } = await importFramerPublishedSite(projectId, framerSiteUrl);
         intake.onImportResult(sourceImport);
+        setReadySource({
+          sourceType: 'framer',
+          sourceImportId: sourceImport.id,
+        });
         intake.onState('ready');
         setSuccess(`Framer published site analyzed. ${capabilities?.target.unavailableReason ?? ''}`);
         return;
@@ -173,11 +235,35 @@ export function ProjectForm({ capabilities, sourceType, file, framerSiteUrl, int
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div>
       ) : null}
       {success ? (
-        <div role="status" className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        <div role="status" className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-800">
           <p>{success}</p>
-          <a className="font-medium underline" href="/projects">
-            View projects
-          </a>
+          {readySource && createdProjectId ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleStartConversion}
+                disabled={isStartingConversion}
+              >
+                {isStartingConversion ? 'Starting conversion…' : 'Start Elementor Conversion'}
+              </button>
+              <a className="font-medium underline" href={`/projects/${createdProjectId}`}>
+                Open project
+              </a>
+              <a className="font-medium underline" href="/projects">
+                View projects
+              </a>
+            </div>
+          ) : (
+            <a className="font-medium underline" href="/projects">
+              View projects
+            </a>
+          )}
+          {conversionError ? (
+            <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+              {conversionError}
+            </div>
+          ) : null}
         </div>
       ) : null}
 

@@ -226,4 +226,113 @@ describe('ProjectForm source intake', () => {
     await waitFor(() => expect(importFramer).toHaveBeenCalledWith('project-id', { siteUrl: 'https://example.framer.website/' }));
     expect(onImportResult).toHaveBeenCalledWith(expect.objectContaining({ id: 'import-id', kind: 'FRAMER_SITE' }));
   });
+
+  it('triggers createConversion with validated upload identifiers and deterministic idempotency key when Start Elementor Conversion is clicked', async () => {
+    vi.spyOn(apiClient, 'createProject').mockResolvedValue({
+      project: {
+        id: 'cmv6ajfqg0000c4rf052ggsk0',
+        name: 'Check',
+        createdAt: '2026-10-12T10:00:00.000Z',
+        updatedAt: '2026-10-12T10:00:00.000Z',
+      },
+    });
+    vi.spyOn(apiClient, 'reserveUpload').mockResolvedValue({
+      upload: { id: 'd0036301-66b6-44f6-b2f5-f7faf7a36396', sourceType: 'REACT_NEXT_ZIP', status: 'PENDING', sizeBytes: '10' },
+      contentUrl: '/api/v1/uploads/d0036301-66b6-44f6-b2f5-f7faf7a36396/content',
+    });
+    vi.spyOn(apiClient, 'uploadContent').mockResolvedValue(undefined);
+    vi.spyOn(apiClient, 'completeUpload').mockResolvedValue({
+      upload: {
+        id: 'd0036301-66b6-44f6-b2f5-f7faf7a36396',
+        sourceType: 'REACT_NEXT_ZIP',
+        detectedFramework: 'react',
+        sourceImportId: 'cmv6ajo7k0001c4rfy0e0scpi',
+        status: 'READY',
+        sha256: 'a'.repeat(64),
+        completedAt: '2026-10-12T10:01:00.000Z',
+      },
+    });
+    const createConversion = vi.spyOn(apiClient, 'createConversion').mockResolvedValue({
+      conversion: { id: 'cjobreal0000000000000000', status: 'QUEUED' },
+      idempotentReplay: false,
+    });
+
+    const file = new File(['zip bytes'], 'christmas-sparkle-studio.zip', { type: 'application/zip' });
+    render(
+      <ProjectForm
+        capabilities={capabilities}
+        sourceType="react-next-zip"
+        file={file}
+        framerSiteUrl=""
+        intake={{ onProgress: vi.fn(), onState: vi.fn(), onValidation: vi.fn(), onImportResult: vi.fn(), onError: vi.fn() }}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Check' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project and validate ZIP' }));
+
+    const startBtn = await screen.findByRole('button', { name: 'Start Elementor Conversion' });
+    fireEvent.click(startBtn);
+
+    await waitFor(() =>
+      expect(createConversion).toHaveBeenCalledWith('cmv6ajfqg0000c4rf052ggsk0', {
+        sourceType: 'react-next-zip',
+        detectedFramework: 'react',
+        uploadId: 'd0036301-66b6-44f6-b2f5-f7faf7a36396',
+        sourceImportId: 'cmv6ajo7k0001c4rfy0e0scpi',
+        targetProfile: {
+          platform: 'elementor',
+          architecture: 'atomic',
+          licenseMode: 'free',
+        },
+        idempotencyKey: 'conv-cmv6ajfqg0000c4rf052ggsk0-d0036301-66b6-44f6-b2f5-f7faf7a36396',
+      }),
+    );
+  });
+
+  it('surfaces conversion creation errors clearly when Start Elementor Conversion fails', async () => {
+    vi.spyOn(apiClient, 'createProject').mockResolvedValue({
+      project: {
+        id: 'cmv6ajfqg0000c4rf052ggsk0',
+        name: 'Check',
+        createdAt: '2026-10-12T10:00:00.000Z',
+        updatedAt: '2026-10-12T10:00:00.000Z',
+      },
+    });
+    vi.spyOn(apiClient, 'reserveUpload').mockResolvedValue({
+      upload: { id: 'd0036301-66b6-44f6-b2f5-f7faf7a36396', sourceType: 'REACT_NEXT_ZIP', status: 'PENDING', sizeBytes: '10' },
+      contentUrl: '/api/v1/uploads/d0036301-66b6-44f6-b2f5-f7faf7a36396/content',
+    });
+    vi.spyOn(apiClient, 'uploadContent').mockResolvedValue(undefined);
+    vi.spyOn(apiClient, 'completeUpload').mockResolvedValue({
+      upload: {
+        id: 'd0036301-66b6-44f6-b2f5-f7faf7a36396',
+        sourceType: 'REACT_NEXT_ZIP',
+        detectedFramework: 'react',
+        status: 'READY',
+        sha256: 'a'.repeat(64),
+        completedAt: '2026-10-12T10:01:00.000Z',
+      },
+    });
+    vi.spyOn(apiClient, 'createConversion').mockRejectedValue(new Error('Conversion requires a ready React or Next.js project upload in this project'));
+
+    const file = new File(['zip bytes'], 'christmas-sparkle-studio.zip', { type: 'application/zip' });
+    render(
+      <ProjectForm
+        capabilities={capabilities}
+        sourceType="react-next-zip"
+        file={file}
+        framerSiteUrl=""
+        intake={{ onProgress: vi.fn(), onState: vi.fn(), onValidation: vi.fn(), onImportResult: vi.fn(), onError: vi.fn() }}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Check' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create project and validate ZIP' }));
+
+    const startBtn = await screen.findByRole('button', { name: 'Start Elementor Conversion' });
+    fireEvent.click(startBtn);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Conversion requires a ready React or Next.js project upload in this project');
+  });
 });

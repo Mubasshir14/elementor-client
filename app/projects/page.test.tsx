@@ -127,20 +127,77 @@ describe('create → list lifecycle (validated ZIP stays with its project)', () 
 });
 
 describe('Project detail page', () => {
-  it('loads the real project by id and links into the conversion workflow', async () => {
-    const getProject = vi.spyOn(apiClient, 'getProject').mockResolvedValue({ project } as never);
+  it('shows the real project and links into conversion history using real job ids (never the project id)', async () => {
+    vi.spyOn(apiClient, 'getProject').mockResolvedValue({ project } as never);
+    vi.spyOn(apiClient, 'getProjectConversions').mockResolvedValue({
+      conversions: [
+        {
+          id: 'cjobabcdef0000000000000',
+          status: 'SUCCEEDED',
+          sourcePlatform: 'REACT_NEXT_ZIP',
+          hasArtifact: true,
+          createdAt: '2026-10-12T10:00:00.000Z',
+          updatedAt: '2026-10-12T10:05:00.000Z',
+        },
+      ],
+    } as never);
+
     render(<ProjectDetailPage params={{ projectId: 'proj-1' }} />);
 
     expect(await screen.findByRole('heading', { name: 'Landing page refresh' })).toBeInTheDocument();
-    expect(getProject).toHaveBeenCalledWith('proj-1');
-    expect(screen.getByRole('link', { name: /Review conversion/ })).toHaveAttribute(
-      'href',
-      '/conversions/proj-1',
-    );
+    expect(apiClient.getProject).toHaveBeenCalledWith('proj-1');
+    expect(apiClient.getProjectConversions).toHaveBeenCalledWith('proj-1');
+
+    // The history link must point at the real ConversionJob id, not the project id.
+    const historyLink = await screen.findByRole('link', { name: /REACT_NEXT_ZIP/ });
+    expect(historyLink).toHaveAttribute('href', '/conversions/cjobabcdef0000000000000');
+    expect(historyLink).not.toHaveAttribute('href', '/conversions/proj-1');
+
+    // The old buggy "Review conversion" link (which used the project id) is gone.
+    expect(screen.queryByRole('link', { name: /Review conversion/ })).not.toBeInTheDocument();
+  });
+
+  it('shows an empty conversion history state (no fabricated entries)', async () => {
+    vi.spyOn(apiClient, 'getProject').mockResolvedValue({ project } as never);
+    vi.spyOn(apiClient, 'getProjectConversions').mockResolvedValue({ conversions: [] } as never);
+
+    render(<ProjectDetailPage params={{ projectId: 'proj-1' }} />);
+
+    expect(await screen.findByText('No conversions yet for this project.')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Review conversion/ })).not.toBeInTheDocument();
+  });
+
+  it('shows multiple conversion jobs when the project has several', async () => {
+    vi.spyOn(apiClient, 'getProject').mockResolvedValue({ project } as never);
+    vi.spyOn(apiClient, 'getProjectConversions').mockResolvedValue({
+      conversions: [
+        { id: 'cjobone000000000000000000', status: 'QUEUED', sourcePlatform: 'REACT_NEXT_ZIP', hasArtifact: false, createdAt: '2026-10-12T10:00:00.000Z', updatedAt: '2026-10-12T10:00:00.000Z' },
+        { id: 'cjobtwo000000000000000000', status: 'FAILED', sourcePlatform: 'FIGMA', hasArtifact: false, createdAt: '2026-10-12T09:00:00.000Z', updatedAt: '2026-10-12T09:30:00.000Z' },
+      ],
+    } as never);
+
+    render(<ProjectDetailPage params={{ projectId: 'proj-1' }} />);
+
+    const links = await screen.findAllByRole('link', { name: /REACT_NEXT_ZIP|FIGMA/ });
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveAttribute('href', '/conversions/cjobone000000000000000000');
+    expect(links[1]).toHaveAttribute('href', '/conversions/cjobtwo000000000000000000');
+  });
+
+  it('shows a conversion-history error state when the history request fails', async () => {
+    vi.spyOn(apiClient, 'getProject').mockResolvedValue({ project } as never);
+    vi.spyOn(apiClient, 'getProjectConversions').mockRejectedValue(new ApiResponseError(500, { error: { message: 'History unavailable' } }));
+
+    render(<ProjectDetailPage params={{ projectId: 'proj-1' }} />);
+
+    expect(await screen.findByRole('heading', { name: 'Landing page refresh' })).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Could not load this project's conversion history/);
+    expect(screen.queryByText('No conversions yet for this project.')).not.toBeInTheDocument();
   });
 
   it('shows an error state (not fake data) when the project request fails', async () => {
     vi.spyOn(apiClient, 'getProject').mockRejectedValue(new ApiNetworkError(new Error('offline')));
+    vi.spyOn(apiClient, 'getProjectConversions').mockResolvedValue({ conversions: [] } as never);
     render(<ProjectDetailPage params={{ projectId: 'proj-1' }} />);
 
     const alert = await screen.findByRole('alert');
@@ -150,10 +207,57 @@ describe('Project detail page', () => {
 
   it('shows a not-found state when the project does not exist', async () => {
     vi.spyOn(apiClient, 'getProject').mockRejectedValue(new ApiResponseError(404, { error: { message: 'PROJECT_NOT_FOUND' } }));
+    vi.spyOn(apiClient, 'getProjectConversions').mockResolvedValue({ conversions: [] } as never);
     render(<ProjectDetailPage params={{ projectId: 'missing-id' }} />);
 
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Back to projects/ })).toHaveAttribute('href', '/projects');
+  });
+
+  it('shows Start Elementor Conversion for an existing project with a ready upload and creates a conversion job', async () => {
+    vi.spyOn(apiClient, 'getProject').mockResolvedValue({
+      project: {
+        ...project,
+        id: 'cmv6ajfqg0000c4rf052ggsk0',
+        name: 'Check',
+        uploads: [
+          {
+            id: 'd0036301-66b6-44f6-b2f5-f7faf7a36396',
+            fileName: 'christmas-sparkle-studio.zip',
+            sourceType: 'REACT_NEXT_ZIP',
+            detectedFramework: 'react',
+            sourceImportId: 'cmv6ajo7k0001c4rfy0e0scpi',
+            completedAt: '2026-10-12T10:05:00.000Z',
+          },
+        ],
+      },
+    } as never);
+    vi.spyOn(apiClient, 'getProjectConversions').mockResolvedValue({ conversions: [] } as never);
+    const createConversion = vi.spyOn(apiClient, 'createConversion').mockResolvedValue({
+      conversion: { id: 'cjobreal0000000000000000', status: 'QUEUED' },
+      idempotentReplay: false,
+    });
+
+    render(<ProjectDetailPage params={{ projectId: 'cmv6ajfqg0000c4rf052ggsk0' }} />);
+
+    expect(await screen.findByText(/Validated source: React ZIP \(christmas-sparkle-studio\.zip\)/)).toBeInTheDocument();
+    const startBtn = await screen.findByRole('button', { name: 'Start Elementor Conversion' });
+    fireEvent.click(startBtn);
+
+    await waitFor(() =>
+      expect(createConversion).toHaveBeenCalledWith('cmv6ajfqg0000c4rf052ggsk0', {
+        sourceType: 'react-next-zip',
+        detectedFramework: 'react',
+        uploadId: 'd0036301-66b6-44f6-b2f5-f7faf7a36396',
+        sourceImportId: 'cmv6ajo7k0001c4rfy0e0scpi',
+        targetProfile: {
+          platform: 'elementor',
+          architecture: 'atomic',
+          licenseMode: 'free',
+        },
+        idempotencyKey: 'conv-cmv6ajfqg0000c4rf052ggsk0-d0036301-66b6-44f6-b2f5-f7faf7a36396',
+      }),
+    );
   });
 });
 

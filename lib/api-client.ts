@@ -526,6 +526,19 @@ export class ApiClient {
     });
   }
 
+  getProjectConversions(projectId: string) {
+    return this.request<{
+      conversions: Array<{
+        id: string;
+        status: string;
+        sourcePlatform?: string;
+        hasArtifact?: boolean;
+        createdAt: string;
+        updatedAt: string;
+      }>;
+    }>(`/projects/${projectId}/conversions`);
+  }
+
   getConversion(conversionId: string) {
     return this.request<{
       conversion: {
